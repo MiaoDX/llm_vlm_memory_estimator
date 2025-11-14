@@ -1,0 +1,7 @@
+gradio==4.44.0
+transformers>=4.36.0
+accelerate>=0.25.0
+# CPU-only torch is sufficient for estimation (no GPU needed)
+# For empirical probe, install torch with CUDA support separately
+torch>=2.1.0
+pandas>=2.0.0
