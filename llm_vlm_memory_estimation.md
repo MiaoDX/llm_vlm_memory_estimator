@@ -1,260 +1,262 @@
-# LLM/VLM Memory Estimation & Verification Playbook
+# LLM/VLM Memory Estimation - Implementation Reference
 
-> One-stop Markdown you can iterate on. Includes rationale, formulas, flags mapping, safety guidance, and a reference to the **estimator + probe script** for convenience.
+> Technical reference for memory estimation formulas and calibration factors used in the implementation.
 
----
+## Overview
 
-## Goals
-- **Estimate per-GPU VRAM** (steady & peak) for LLM/VLM fine-tuning from configs.
-- Account for common knobs: **dtype**, **LoRA/QLoRA**, **FlashAttention**, **Liger/fused loss**, **grad checkpointing**, **KV cache policy**, **optimizer type/precision**, **DeepSpeed ZeRO 0/1/2/3**, **DP/TP/PP**.
-- **Validate empirically** with a synthetic forward/backward probe that logs peak allocator stats.
-- Provide **conservative margins** and a **calibration loop** to reduce “estimate 100 GB, reality 200 GB” surprises.
+Estimates per-GPU VRAM requirements for LLM/VLM fine-tuning accounting for:
+- **Precision**: fp32, bf16, fp16, int8, int4/nf4 (QLoRA)
+- **PEFT**: LoRA/QLoRA with configurable rank and target modules
+- **Optimizations**: FlashAttention, gradient checkpointing, fused loss kernels
+- **Parallelism**: Data Parallel (DP), Tensor Parallel (TP), Pipeline Parallel (PP)
+- **DeepSpeed ZeRO**: Stages 0/1/2/3 with optimizer/gradient/parameter sharding
+- **Vision**: VLM support with vision encoder memory estimation
 
----
+## Safety Margins
 
-## Quick Start
+**Recommended headroom:**
+- Keep peak ≤ 75-80% of physical HBM
+- Example: H200 141 GB → target ≤ ~113 GB per GPU
 
-### 1) Estimate only (no GPU run)
+**Built-in cushions:**
+- CUDA/cuBLAS context: ~2.5 GiB
+- Miscellaneous framework overhead: ~3.0 GiB
+- Allocator fragmentation: ~5.0 GiB (configurable)
+- DeepSpeed overhead: 0-3 GiB (stage-dependent)
+
+**Memory limitations:**
+- Cannot reliably emulate *more* HBM (CUDA Unified Memory is slow and unrealistic)
+- Can enforce *less* memory via MIG partitions or PyTorch memory fraction caps
+
+## Memory Components
+
+Per-GPU VRAM breakdown:
+
+```
+Total = Weights + Trainable_State + Activations + Logits + Overheads + Peak_Buffer
+```
+
+### 1. Base Weights
+
+**Formula:** `W_bytes = P × bytes_per_param(dtype)`
+
+**Precision bytes per parameter:**
+- fp32/float32: 4.0
+- bf16/bfloat16/fp16/float16: 2.0
+- int8/fp8: 1.0
+- int4: 0.5
+- nf4 (QLoRA): 0.56 (includes scales/zeros overhead)
+
+**Sharding:**
+- ZeRO-3 (full fine-tune): `W_bytes /= DP` (sharded across data-parallel ranks)
+- ZeRO-3 (QLoRA): Base weights replicated (no DP sharding), only LoRA params sharded
+- Tensor Parallel: `W_bytes /= TP` (sharded across tensor-parallel ranks)
+- Pipeline Parallel: `W_bytes ≈ W_bytes / PP` (approximate per-stage residency)
+
+### 2. Trainable State
+
+**Components:**
+- Gradients: `trainable_params × bytes(dtype)`
+- Optimizer (AdamW 32-bit): `trainable_params × 8` (2 states × 4 bytes)
+- Master weights (optional FP32): `trainable_params × 4`
+
+**Trainable parameter count:**
+- Full fine-tuning: `trainable_params = total_params`
+- LoRA: `trainable_params ≈ 2 × rank × hidden × target_modules × layers`
+  - Heuristic estimation from model architecture
+  - Override via `--lora-params-override` for exact count
+
+**ZeRO sharding:**
+- Stage 0: No sharding
+- Stage 1: `optimizer_state /= DP`
+- Stage 2: `(optimizer_state + gradients) /= DP`
+- Stage 3: `(optimizer_state + gradients + trainable_params) /= DP`
+
+**Tensor Parallel:** All trainable tensors divided by `TP`
+
+### 3. Activations
+
+**Attention (without FlashAttention):**
+```
+A_attn = B × heads × S² × (L/PP) + B × S × (L/PP) × H × attn_factor_no_fa
+```
+- Explicit O(S²) score/probability matrices
+- Default `attn_factor_no_fa = 4.0`
+
+**Attention (with FlashAttention):**
+```
+A_attn = B × S × (L/PP) × H × attn_factor_fa
+```
+- Linear in sequence length (no materialized scores)
+- Default `attn_factor_fa = 0.8` (~80% reduction)
+
+**MLP:**
+```
+A_mlp = B × S × (L/PP) × H × mlp_factor
+```
+- Default `mlp_factor = 6.0`
+
+**Gradient Checkpointing:**
+- Multiplies activation terms by `grad_ckpt_reduction`
+- Default `grad_ckpt_reduction = 0.35` (retains 35%, recomputes 65%)
+
+**Tensor Parallel:** Activations divided by `TP`
+
+### 4. Logits
+
+**Formula:**
+```
+A_logits = (B × S × V / TP) × logits_factor × reduction
+```
+
+**Reduction:**
+- Standard: `reduction = 1.0`
+- Fused loss (Liger): `reduction = 0.2` (80% reduction via in-kernel computation)
+
+**Sharding:** Logits divided by `TP` (vocab-parallel)
+
+### 5. KV Cache
+
+**Formula (when enabled):**
+```
+A_kv = (2 × B × S × (L/PP) × H) / TP
+```
+
+**Note:** Typically disabled during training
+
+### 6. Vision Encoder (VLM)
+
+**Formula:**
+```
+A_vis = B × image_patches × vision_layers × vision_hidden
+```
+
+Where:
+- `image_patches = (image_size / patch_size)²`
+- Affected by gradient checkpointing when enabled
+- Assumed replicated (not TP-sharded) in most VLMs
+
+**Configuration:**
+- `--vision-hidden`: Vision encoder hidden size (default: 1024)
+- `--vision-layers`: Vision encoder layers (default: 24)
+- `--vision-image-size`: Image size in pixels (default: 448)
+- `--vision-patch`: ViT patch size (default: 14)
+
+### 7. Overheads
+
+**Fixed cushions (GiB):**
+- CUDA/cuBLAS context: 2.5 (configurable via `--cuda-libs-gib`)
+- Miscellaneous overhead: 3.0 (configurable via `--misc-overhead-gib`)
+- Fragmentation: 5.0 (configurable via `--fragmentation-gib`)
+- DeepSpeed: Stage-dependent (configurable via `--deepspeed-overhead-gib`):
+  - Stage 0: 0.0 GiB
+  - Stage 1: 1.5 GiB
+  - Stage 2: 2.0 GiB
+  - Stage 3: 3.0 GiB
+
+### 8. Peak Memory
+
+**Formula:**
+```
+peak = steady + transient_overhead + zero3_allgather_overhead
+```
+
+**Components:**
+- Steady: Sum of all memory components
+- Transient: Small buffers proportional to batch size
+- ZeRO-3 all-gather: Temporary parameter materialization during forward/backward
+
+## Calibration Factors
+
+All tunable via CLI for empirical calibration:
+
+| Factor | Flag | Default | Purpose |
+|--------|------|---------|---------|
+| Attention (no FA) | `--attn-act-factor-no-fa` | 4.0 | Attention activation scaling |
+| Attention (with FA) | `--attn-act-factor-fa` | 0.8 | FlashAttention reduction |
+| MLP | `--mlp-act-factor` | 6.0 | MLP activation scaling |
+| Logits | `--logits-factor` | 1.0 | Output logits scaling |
+| Grad checkpoint | `--grad-ckpt-reduction` | 0.35 | Activation retention fraction |
+| Fragmentation | `--fragmentation-gib` | 5.0 | Allocator fragmentation cushion |
+
+## Configuration Mapping
+
+### HuggingFace Trainer → CLI Flags
+
+| Trainer Config | CLI Flag | Notes |
+|----------------|----------|-------|
+| `per_device_train_batch_size` | `--per-device-batch` | Micro-batch size per GPU |
+| `gradient_accumulation_steps` | `--grad-accum` | Gradient accumulation |
+| `bf16=True` | `--dtype bf16` | BFloat16 precision |
+| `fp16=True` | `--dtype fp16` | Float16 precision |
+| `gradient_checkpointing=True` | `--grad-checkpoint true` | Activation checkpointing |
+| `optim="adamw_*"` | `--optimizer adamw` | Optimizer type |
+| PEFT `r` | `--lora-rank` | LoRA rank |
+| PEFT `lora_alpha` | `--lora-alpha` | LoRA alpha |
+| PEFT `target_modules` | `--lora-target-modules` | Target modules list |
+
+### LLaMA-Factory → CLI Flags
+
+| LLaMA-Factory | CLI Flag | Notes |
+|---------------|----------|-------|
+| `flash_attn: fa2` | `--flashattn true` | FlashAttention 2 |
+| `enable_liger_kernel: true` | `--liger true --fused-loss true` | Liger kernels |
+| `zero_stage: N` | `--zero N` | DeepSpeed ZeRO stage |
+| `quantization_bit: 4` + LoRA | `--qlora true` | 4-bit QLoRA (NF4) |
+
+### DeepSpeed Config → CLI Flags
+
+| DeepSpeed | CLI Flag | Notes |
+|-----------|----------|-------|
+| `zero_optimization.stage` | `--zero` | ZeRO stage (0/1/2/3) |
+| `train_micro_batch_size_per_gpu` | `--per-device-batch` | Micro-batch size |
+| Data parallel size | `--dp` | Number of DP ranks |
+
+## Implementation Notes
+
+**Parameter Counting:**
+- Uses HuggingFace `transformers` library with `accelerate.init_empty_weights()`
+- Counts parameters on CPU without GPU/memory requirements
+- Supports local paths and HuggingFace Hub model IDs
+
+**LoRA Parameter Estimation:**
+- Heuristic-based estimation from model architecture
+- Counts: `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`
+- Formula: `lora_params ≈ 2 × rank × hidden_dim × num_target_modules × num_layers`
+- Use `--lora-params-override` if exact count is known
+
+**Accuracy:**
+- Estimates typically within ±10-15% after calibration
+- Accuracy depends on framework versions and kernel implementations
+- Use empirical validation for production workloads
+
+**Limitations:**
+- Vision encoder estimation is approximate (assumes ViT-style architecture)
+- Custom architectures may require manual factor tuning
+- Framework overhead varies by version and configuration
+- Communication buffers approximated in fixed overheads
+
+## CLI Reference
+
+**Basic usage:**
 ```bash
-python scripts/estimate_memory_budget.py \
-  --model meta-llama/Llama-2-7b-hf \
-  --dtype bf16 --seq-len 4096 \
-  --per-device-batch 2 --grad-accum 128 \
-  --zero 2 --dp 8 --tp 1 --pp 1 \
-  --flashattn true --liger true --fused-loss true --grad-checkpoint true
+python -m llm_memory_estimator \
+  --model MODEL_NAME \
+  --dtype bf16 \
+  --seq-len 4096 \
+  --per-device-batch 2 \
+  --grad-accum 128 \
+  --dp 8 \
+  --zero 2 \
+  --flashattn true \
+  --grad-checkpoint true
 ```
 
-### 2) Estimate w/ LoRA
-```bash
-python scripts/estimate_memory_budget.py \
-  --model mistralai/Mistral-7B-v0.1 \
-  --lora true --lora-rank 8 --lora-target-modules q_proj k_proj v_proj o_proj \
-  --dtype bf16 --seq-len 4096 --per-device-batch 1 --grad-accum 128 \
-  --flashattn true --fused-loss true
-```
+**Full parameter list:** `python -m llm_memory_estimator --help`
 
-### 3) Empirical probe (allocates VRAM!)
-```bash
-python scripts/estimate_memory_budget.py \
-  --model mistralai/Mistral-7B-v0.1 \
-  --dtype bf16 --seq-len 4096 --per-device-batch 1 --grad-accum 64 \
-  --probe true --warmup-steps 3 --probe-steps 6
-```
+## References
 
----
-
-## Safety & Headroom
-- Treat the estimator as **conservative** but not infallible.
-- Keep **peak ≤ 75–80%** of physical HBM (e.g., H200 141 GB → target ≤ ~113 GB per GPU).
-- Add **fragmentation** (+2–6 GB) and **CUDA/cuBLAS** (+~2–3 GB) cushions.
-- Prefer **down-sweeping micro-batch** with gradient accumulation to fit.
-
-**“Fake GPU memory?”**
-- You cannot reliably emulate *more* HBM. CUDA Unified Memory can oversubscribe but is non-representative and very slow.
-- You can emulate *less* memory: **MIG** partitions (hardware-level caps) or **PyTorch per-process memory fraction** (allocator-governed cap). Use this to enforce safety margins, not to pretend you own a bigger GPU.
-
----
-
-## Estimation Model (Concepts)
-We break down per-GPU VRAM into:
-
-1) **Base weights**
-   - Modeled as `params × bytes(dtype)`; if **QLoRA**/NF4, base weights are treated as ≈0.55–0.6 byte/param to account for scales/zeros overhead.
-   - With **ZeRO-3** + **DP=N**, parameters are sharded across data-parallel ranks (effective **÷N** per rank) for full fine-tuning; for QLoRA we conservatively keep base weights replicated across DP ranks (no ZeRO sharding) but still shard them across TP ranks.
-   - With **TP=T**, layer parameters are sharded across tensor-parallel ranks (effective **÷T** per rank).
-   - With **PP=K**, we approximate per-rank residency by dividing total parameters by `K` (each pipeline stage holds roughly `1/K` of the layers/params).
-
-2) **Trainable state**
-   - **Full FT**: includes gradients, optimizer moments (AdamW ≈ `2 × trainable_params × 4 B`), and optional FP32 master weights.
-   - **LoRA/PEFT**: applies the same formulas but only to **LoRA params** (base weights are treated as frozen/quantized); LoRA params are also divided by the pipeline parallel degree.
-   - **ZeRO** scaling: stage-1 shards optimizer; stage-2 shards optimizer+grads; stage-3 shards optimizer+grads+params across DP.
-   - **TP** shards trainable tensors across `T` when computing gradients, optimizer state, and (for full FT) master weights.
-
-3) **Activations**
-   - Modeled as scaling with **micro-batch × seq_len × hidden_size × layers**, split into **Attention** and **MLP** terms.
-   - **Non-FlashAttention**: attention activations include an explicit `O(S²)` score/prob term (roughly `B × heads × S × S × layers_per_stage`) plus a linear-in-`S` term controlled by a tunable factor.
-   - **FlashAttention**: uses a separate attention factor and is modeled as roughly linear in `S`, reflecting that large score/prob matrices are not materialized.
-   - **Gradient checkpointing** multiplies activation terms by a reduction factor (recompute instead of store).
-   - **Liger/fused loss** reduces large transient tensors (e.g., logits buffer before loss).
-
-4) **Logits / Loss buffers**
-   - Modeled as `B × L × V × bytes(dtype)` scaled by a tunable logits factor.
-   - With fused loss (e.g., Liger), a strong reduction factor is applied to approximate in-kernel loss computation.
-
-5) **KV cache** (usually off in training; on in some RLHF/inference-like loops)
-   - Modeled as `≈ 2 × B × L × layers_per_stage × H × bytes(dtype)` when enabled.
-
-6) **Vision branch** (VLM)
-   - Adds ViT/CNN feature map activations based on image size, patching, layers, and hidden size via a rough ViT-style term. We assume the vision encoder is replicated (not TP-sharded) in most VLMs; if your vision stack uses TP, adjust factors accordingly.
-
-7) **Overheads**
-   - CUDA/cuBLAS handles, allocator reserve, DeepSpeed/runtime overhead, and miscellaneous framework state modeled as fixed GiB cushions.
-   - **Fragmentation** reserve to absorb allocator fragmentation and additional buffers.
-
-**Totals**
-- `steady = sum(categories)`
-- `peak = steady + small_transient_overhead`
-
----
-
-## Core Formulas (Simplified)
-Let `P = total_params`, `H = hidden_size`, `L = num_layers`, `V = vocab_size`, `B = micro_batch`, `S = seq_len`, `N = DP`, `T = TP`.
-
-**Weights per rank (steady):**
-- If QLoRA: `W_bytes ≈ P × 0.56` (NF4 base weights with scales/zeros) else `P × bytes(dtype)`.
-- With ZeRO-3 and full FT: `W_bytes /= N` to reflect parameter sharding across data-parallel ranks; for QLoRA we keep base weights replicated across DP ranks (no ZeRO sharding).
-- With tensor parallel: `W_bytes /= T` to reflect per-shard residency.
-- With pipeline parallel: we approximate per-rank parameters as `P / PP` (each stage holds a slice of layers).
-
-**Trainable (full FT vs LoRA):**
-- Full fine-tuning: `TrainParams = P` and we model gradients, optimizer states, and optional master weights for all parameters.
-- LoRA/PEFT: `TrainParams ≈ 2 × r × H × modules × L` (heuristic; see code) or an override count; only these are treated as trainable.
-- Gradients: `G_bytes = TrainParams × bytes(dtype)`.
-- Optimizer (AdamW 32-bit): `O_bytes ≈ TrainParams × 8`.
-- Master weights (optional): `M_bytes ≈ TrainParams × 4`.
-- ZeRO scaling: Stage-1 → `O_bytes /= N`; Stage-2 → `(O_bytes + G_bytes) /= N`; Stage-3 → additionally shards trainable params across `N`.
-- Tensor parallel: divides trainable tensors across `T` (gradients, optimizer state, and master weights are divided by `T` in the implementation).
-
-**Activations (heuristic, tuned):**
-- Attention (non-FA): `A_attn ≈ B × heads × S² × L_rank + B × S × L_rank × H × attn_factor_no_fa`, where `L_rank ≈ L / PP` and the factor term absorbs additional tensors.
-- Attention (FA): `A_attn ≈ B × S × L_rank × H × attn_factor_fa`, modeled as roughly linear in `S`.
-- MLP: `A_mlp ≈ B × S × L_rank × H × mlp_factor`.
-- Gradient checkpointing: both attention and MLP terms are multiplied by `gc_reduction` when enabled.
-- Tensor parallel: activations are approximated as sharded across `T` (both attention and MLP activations are divided by `T`).
-
-**Logits / loss:**
-- `A_logits ≈ (B × S × V / T) × logits_factor × (0.2 if fused_loss else 1.0)` (logits are divided by `T` to reflect vocab-parallel projections).
-
-**KV cache:** `A_kv ≈ (2 × B × S × L_rank × H) / T` when KV cache is enabled.
-
-**Vision activations (ViT-ish):** `A_vis ≈ B × image_patches × vision_layers × vision_hidden`, scaled by checkpoint reduction when applicable.
-
-**Overheads:** `A_overhead = CUDA + misc + DeepSpeed + fragmentation` (GiB sums).
-
-**Peak:** `peak ≈ steady + small_transient_overhead + zero3_allgather_overhead`, where:
-- The transient term is a simple function of `B` (optimizer/loss buffers).
-- The ZeRO-3 term approximates the incremental peak from materializing full parameters per rank during all-gather/reduce-scatter (scales with `P`, `dtype`, `N`, and `T`).
-
----
-
-## Config Mapping Cheat Sheet
-
-### Hugging Face / Trainer / TRL
-- `per_device_train_batch_size` → `--per-device-batch`
-- `gradient_accumulation_steps` → `--grad-accum`
-- `bf16`/`fp16` → `--dtype`
-- `gradient_checkpointing` → `--grad-checkpoint true`
-- `optim` (`adamw_*`, `adafactor`) → `--optimizer`, `--optimizer-bits`
-- LoRA (via PEFT): `lora_r`, `lora_alpha`, `target_modules` → `--lora true`, `--lora-rank`, `--lora-target-modules`
-
-### LLaMA-Factory
-- `flash_attn: fa2` → `--flashattn true`
-- `enable_liger_kernel: true` → `--liger true` (and often `--fused-loss true`)
-- `zero_stage: 0/1/2/3`, `deepspeed` YAML → `--zero`, `--dp` (and TP/PP if using)
-- `quantization_bit: 4` + LoRA → `--qlora true` (weights in NF4)
-
-### DeepSpeed
-- `zero_optimization.stage` → `--zero`
-- `zero_optimization.offload_optimizer.device: cpu` → `--dp-offload-optimizer true`
-- `train_batch_size` = `dp × per_device_batch × grad_accum`
-- TP/PP often configured via launcher — map to `--tp` / `--pp`; TP is used to shard parameters/activations/logits in the estimator, PP is used to approximate per-stage residency.
-
----
-
-## Empirical Probe Protocol
-1) **Match config flags** exactly (dtype, FA/Liger, LoRA, ckpt, sequence length, micro-batch).
-2) Warm up a few steps, then measure **`torch.cuda.max_memory_allocated()`** and **`...reserved()`**.
-3) Compare **Estimate (peak)** vs **Reserved**; adjust multipliers to close the gap (see *Calibration*).
-4) Optional: **binary search** micro-batch (constant global batch via GA) to auto-find the largest safe size.
-
-> The included script prints a category table + totals, then an optional probe section with measured peaks.
-
----
-
-## Calibration Workflow
-- Start with defaults (`--fragmentation-gib 5`, FA factors, logits factor, etc.).
-- Run a probe on one representative config.
-- If **estimate < measured**, increase the relevant terms:
-  - Attention too low? Raise `--attn-act-factor-*`.
-  - MLP too low? Raise `--mlp-act-factor`.
-  - Loss peak? Increase `--logits-factor` or disable `--fused-loss` in estimate to be conservative.
-  - Fragmentation spike? Increase `--fragmentation-gib`.
-- Re-run until estimate ≥ measured by ~10–15%.
-
----
-
-## Multi-GPU & Parallelism
-- **DP + ZeRO**: applies the ZeRO stage rules to shard optimizer state, gradients, and (for ZeRO-3) parameters across data-parallel ranks; the estimator also adds an explicit ZeRO-3 all-gather peak term. Always check per-rank usage against headroom.
-- **TP**: parameters and trainable state are sharded across `T`; activations and logits are also divided by `T` to approximate tensor/vocab parallelism, so TP runs are more accurately modeled (you can still tune activation/logits factors for your stack).
-- **PP**: pipeline parallel degree is used to approximate how many layers/params live on a given stage (roughly `1/PP` of the model per rank), which reduces the previous over-estimation for PP>1; exact stage distribution can still shift peak locations, so use probes for final safety.
-- Prefer **per-rank peaks** as the primary capacity constraint.
-
----
-
-## Known Pitfalls
-- FlashAttention/Liger availability depends on installed kernels; your **probe** may not reflect the “ideal” if they’re missing.
-- 8-bit optimizers vary in state layout; the script uses **conservative** approximations by default.
-- Activation checkpointing patterns differ across frameworks (per-block vs per-layer); adjust `--grad-ckpt-reduction` accordingly.
-- Vision encoders vary widely; our VLM term is deliberately rough — extend with your specific backbone math for accuracy.
-
----
-
-## Roadmap (Next Extensions)
-- Precise modeling for **bitsandbytes** optim states & offload.
-- **DeepSpeed** multi-GPU probe wrapper (stage-aware) for true distributed measurement.
-- Detection hooks for **FA2/Liger** presence to auto-switch multipliers.
-- Per-architecture activation shapes (Llama/Mistral/Qwen/GPT-NeoX) for tighter factors.
-- VLM backbones (CLIP/ViT variants) with exact tensor shapes.
-
----
-
-## Estimator Script
-The estimator + probe implementation lives in `scripts/estimate_memory_budget.py`. It implements the concepts and formulas described above and exposes all of the tunable factors used in the examples. Some flags (e.g., `--liger`, `--dp-offload-optimizer`) are currently tracked for configuration mirroring and probe context but do not yet change the VRAM estimates directly.
-
-Usage examples (from repo root):
-
-```bash
-python scripts/estimate_memory_budget.py --help
-
-# Example: estimate only
-python scripts/estimate_memory_budget.py \
-  --model meta-llama/Llama-2-7b-hf \
-  --dtype bf16 --seq-len 4096 \
-  --per-device-batch 2 --grad-accum 128 \
-  --zero 2 --dp 8 --tp 1 --pp 1 \
-  --flashattn true --liger true --fused-loss true --grad-checkpoint true
-```
-
----
-
-## Repro Template (fill this for each run)
-```
-### Experiment ID
-Model:
-Commit/Env: CUDA=, PyTorch=, Transformers=, FlashAttn=, Liger=
-GPU(s): Model=, Count=, HBM per GPU=
-Parallelism: DP=, TP=, PP=, ZeRO=
-
-### Config
-Seq len=, micro-batch=, GA=, dtype=, optimizer= (bits=), ckpt=?, LoRA=?, QLoRA=?, FA=?, Liger=?, fused-loss=?
-
-### Estimator Output
-Base weights= GiB
-Trainable state= GiB
-Attention activ.= GiB
-MLP activ.= GiB
-Logits= GiB
-KV cache= GiB
-Vision activ.= GiB
-Misc= GiB, CUDA= GiB, DS= GiB, Frag= GiB
-Total (steady)= GiB
-Total (peak)= GiB
-
-### Probe Output
-max_memory_allocated= GiB
-max_memory_reserved= GiB
-Diff (estimate - reserved)= GiB
-
-### Notes
--
-```
+- DeepSpeed ZeRO: https://www.deepspeed.ai/tutorials/zero/
+- FlashAttention: https://github.com/Dao-AILab/flash-attention
+- QLoRA: https://arxiv.org/abs/2305.14314
+- LoRA: https://arxiv.org/abs/2106.09685

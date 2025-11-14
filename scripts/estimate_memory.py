@@ -11,12 +11,12 @@ from llm_vlm_memory_estimator.core.estimator import MemoryEstimator
 
 
 def main():
-    """Example: Estimate memory for Llama-2-7B with LoRA"""
+    """Example: Estimate memory for Qwen2.5-7B with LoRA"""
 
     # Configure estimation
     config = EstimatorConfig(
         # Model
-        model="meta-llama/Llama-2-7b-hf",
+        model="Qwen/Qwen2.5-7B-Instruct",
         dtype="bf16",
 
         # Training shape

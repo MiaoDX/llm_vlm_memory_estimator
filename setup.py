@@ -56,7 +56,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "llm-memory-estimator=llm_memory_estimator.__main__:main",
+            "llm-memory-estimator=llm_memory_estimator.cli:main",
         ],
     },
     include_package_data=True,

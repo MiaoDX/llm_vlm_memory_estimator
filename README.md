@@ -1,62 +1,51 @@
-# 🧮 LLM/VLM Memory Estimator
+# LLM/VLM Memory Estimator
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+Estimate GPU memory requirements for fine-tuning Large Language Models and Vision-Language Models.
 
-Estimate per-GPU VRAM requirements for LLM/VLM fine-tuning with support for:
-- ✅ **LoRA** and **QLoRA** (4-bit quantization)
-- ✅ **FlashAttention** and **Gradient Checkpointing**
-- ✅ **DeepSpeed ZeRO** (stages 0/1/2/3)
-- ✅ **Multi-GPU parallelism** (DP/TP/PP)
-- ✅ **Fused kernels** (Liger loss)
-- ✅ **Gradio Web UI** for interactive estimation
-- ✅ **Command-line tool** with empirical probe
+## Features
 
----
+- ✅ LoRA / QLoRA (4-bit quantization)
+- ✅ FlashAttention & Gradient Checkpointing
+- ✅ DeepSpeed ZeRO (0/1/2/3)
+- ✅ Multi-GPU (DP/TP/PP)
+- ✅ Web UI & CLI
+- ✅ Supports Qwen, Llama, Mistral, etc.
 
-## 🚀 Quick Start
+## Quick Start
 
-### Option 1: Web UI (Gradio)
+### Web UI
 
 ```bash
-# Install
-pip install -e .
-
-# Run Gradio app
-python app.py
-
-# Or with gradio extras
 pip install -e ".[gradio]"
-gradio app.py
+python app.py
+# Visit http://localhost:7860
 ```
 
-Visit `http://localhost:7860` to use the interactive UI.
-
-### Option 2: Command Line
+### Command Line
 
 ```bash
-# Install
 pip install -e .
 
-# Run estimation
-python -m estimate_memory_budget \
-  --model meta-llama/Llama-2-7b-hf \
-  --dtype bf16 --seq-len 4096 \
-  --per-device-batch 2 --grad-accum 128 \
-  --zero 2 --dp 8 \
-  --flashattn true --grad-checkpoint true
-
-# Or use the CLI script directly
-python cli.py --model meta-llama/Llama-2-7b-hf --dtype bf16 --seq-len 4096
+# Basic estimation
+python -m llm_memory_estimator \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --dtype bf16 \
+  --seq-len 4096 \
+  --per-device-batch 2 \
+  --grad-accum 128 \
+  --zero 2 \
+  --dp 8 \
+  --flashattn true \
+  --grad-checkpoint true
 ```
 
-### Option 3: Python API
+### Python API
 
 ```python
-from cli import MemoryEstimator, EstimatorInputs
+from llm_memory_estimator.cli import MemoryEstimator, EstimatorInputs
 
 cfg = EstimatorInputs(
-    model="meta-llama/Llama-2-7b-hf",
+    model="Qwen/Qwen2.5-7B-Instruct",
     dtype="bf16",
     seq_len=4096,
     per_device_batch=2,
@@ -69,164 +58,37 @@ cfg = EstimatorInputs(
 
 estimator = MemoryEstimator(cfg)
 result = estimator.estimate()
-
 print(f"Peak memory: {result.peak_total_gib:.2f} GiB per GPU")
 ```
 
----
+## Examples
 
-## 📦 Installation
-
-### From Source (Development)
+### Full Fine-Tuning (7B Model)
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/llm-memory-estimator.git
-cd llm-memory-estimator
-pip install -e .
-```
-
-### With Gradio UI
-
-```bash
-pip install -e ".[gradio]"
-```
-
-### Requirements
-
-**For Estimation Only** (No GPU needed):
-```
-transformers >= 4.36.0
-accelerate >= 0.25.0
-torch >= 2.1.0  # CPU version is sufficient
-pandas >= 2.0.0
-```
-
-**For Empirical Probe** (GPU required):
-```bash
-# Install CUDA-enabled torch separately
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-```
-
-**For Web UI**:
-```
-gradio >= 4.40.0
-```
-
----
-
-## 💡 Features
-
-### 🎛️ Supported Configurations
-
-| Feature | Support | Notes |
-|---------|---------|-------|
-| **Models** | Any HF model | LLaMA, Mistral, Qwen, GPT, T5, etc. |
-| **Precision** | fp32, bf16, fp16, fp8, int8, nf4 | QLoRA uses nf4 (4-bit) |
-| **LoRA** | ✅ | Parameter-efficient fine-tuning |
-| **QLoRA** | ✅ | 4-bit base + LoRA adapters |
-| **FlashAttention** | ✅ | Reduces attention O(N²) → O(N) |
-| **Grad Checkpoint** | ✅ | Trade compute for memory |
-| **Fused Loss** | ✅ | Liger kernel (~5x logits reduction) |
-| **ZeRO** | 0/1/2/3 | DeepSpeed optimizer sharding |
-| **Data Parallel** | ✅ | Multi-GPU data replication |
-| **Tensor Parallel** | ✅ | Model layer sharding |
-| **Pipeline Parallel** | ✅ | Model stage distribution |
-
-### 📊 What It Estimates
-
-The tool provides comprehensive memory breakdown:
-
-1. **Base Weights** - Model parameters (sharded by TP/PP, ZeRO-3)
-2. **Trainable State** - Gradients + optimizer + master weights
-3. **Activations** - Attention + MLP intermediate tensors
-4. **Logits** - Output vocabulary projections
-5. **Overheads** - CUDA context, DeepSpeed, fragmentation
-6. **Peak Buffers** - ZeRO-3 all-gather, optimizer step temporaries
-
-### 🎯 Use Cases
-
-**Research & Planning:**
-- "Can I fine-tune Llama-2 70B on 8x A100 80GB?"
-- "How many GPUs needed for Mistral-7B with QLoRA?"
-- "Will gradient checkpointing let me fit larger batches?"
-
-**Production Optimization:**
-- Compare LoRA vs QLoRA vs full fine-tuning costs
-- Find optimal batch size for given hardware
-- Calibrate estimates against empirical measurements
-
-**Education:**
-- Understand memory breakdown for different techniques
-- Learn how ZeRO, TP, PP affect memory distribution
-- Visualize impact of FlashAttention, gradient checkpointing
-
----
-
-## 📖 Documentation
-
-- **[CLI Reference](./CLI_README.md)** - Command-line usage and all parameters
-- **[Playbook](./docs/llm_vlm_memory_estimation_verification_playbook_markdown.md)** - Complete technical guide
-- **[Web UI Guide](#gradio-web-ui)** - Gradio app usage
-
----
-
-## 🌐 Gradio Web UI
-
-The package includes a full-featured Gradio web interface:
-
-```bash
-python app.py
-```
-
-**Features:**
-- ✅ 5 organized tabs (Basic, Parallelism, Optimizations, LoRA, Advanced)
-- ✅ 20+ configurable parameters
-- ✅ Real-time memory calculation
-- ✅ Breakdown table and GPU recommendations
-- ✅ 4 preset example configurations
-- ✅ Mobile-responsive design
-
-**Deploy to HuggingFace Spaces:**
-
-```bash
-# The app.py is ready for HF Spaces deployment
-# Just push the entire folder to a HF Space repository
-```
-
-See [HuggingFace Spaces Guide](https://huggingface.co/docs/hub/spaces) for deployment instructions.
-
----
-
-## 🔬 Examples
-
-### Example 1: Llama-2 7B Full Fine-Tuning
-
-```bash
-python cli.py \
-  --model meta-llama/Llama-2-7b-hf \
+python -m llm_memory_estimator \
+  --model Qwen/Qwen2.5-7B-Instruct \
   --dtype bf16 \
   --seq-len 4096 \
   --per-device-batch 2 \
-  --grad-accum 128 \
   --zero 2 \
   --dp 8 \
   --flashattn true \
   --grad-checkpoint true
 ```
 
-**Result:** ~14 GiB/GPU → Fits on A100 40GB
+**Result:** ~14 GiB/GPU (fits on A100 40GB)
 
-### Example 2: Mistral 7B with QLoRA
+### QLoRA (7B Model)
 
 ```bash
-python cli.py \
-  --model mistralai/Mistral-7B-v0.1 \
+python -m llm_memory_estimator \
+  --model Qwen/Qwen2.5-7B-Instruct \
   --dtype bf16 \
   --qlora true \
   --lora-rank 8 \
   --seq-len 4096 \
   --per-device-batch 1 \
-  --grad-accum 64 \
   --zero 3 \
   --dp 4 \
   --tp 2 \
@@ -234,19 +96,17 @@ python cli.py \
   --grad-checkpoint true
 ```
 
-**Result:** ~8 GiB/GPU → Fits on RTX 4090
+**Result:** ~8 GiB/GPU (fits on RTX 4090)
 
-### Example 3: Llama-2 70B with LoRA
+### LoRA (72B Model)
 
 ```bash
-python cli.py \
-  --model meta-llama/Llama-2-70b-hf \
+python -m llm_memory_estimator \
+  --model Qwen/Qwen2.5-72B-Instruct \
   --dtype bf16 \
   --lora true \
   --lora-rank 64 \
   --seq-len 4096 \
-  --per-device-batch 1 \
-  --grad-accum 512 \
   --zero 3 \
   --dp 32 \
   --tp 4 \
@@ -254,16 +114,34 @@ python cli.py \
   --grad-checkpoint true
 ```
 
-**Result:** ~18 GiB/GPU → Fits on A100 40GB
+**Result:** ~18 GiB/GPU (fits on A100 40GB)
 
-### Example 4: Empirical Validation (GPU Required)
+### Vision-Language Model
 
 ```bash
-python cli.py \
-  --model meta-llama/Llama-2-7b-hf \
+python -m llm_memory_estimator \
+  --model Qwen/Qwen2.5-VL-7B-Instruct \
   --dtype bf16 \
   --seq-len 4096 \
-  --per-device-batch 2 \
+  --per-device-batch 1 \
+  --zero 2 \
+  --dp 4 \
+  --flashattn true \
+  --grad-checkpoint true \
+  --use-vision true \
+  --vision-hidden 1024 \
+  --vision-layers 24 \
+  --vision-image-size 448 \
+  --vision-patch 14
+```
+
+### Empirical Probe (GPU Required)
+
+```bash
+python -m llm_memory_estimator \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --dtype bf16 \
+  --seq-len 4096 \
   --flashattn true \
   --grad-checkpoint true \
   --probe true \
@@ -271,169 +149,73 @@ python cli.py \
   --probe-steps 6
 ```
 
-**Output:**
+Compares estimated vs actual GPU memory usage.
+
+## Key Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--model` | HuggingFace model ID | Required |
+| `--dtype` | Precision (bf16/fp16/fp32/int8/nf4) | bf16 |
+| `--seq-len` | Sequence length | 4096 |
+| `--per-device-batch` | Batch size per GPU | 1 |
+| `--grad-accum` | Gradient accumulation steps | 1 |
+| `--dp` | Data parallelism degree | 1 |
+| `--tp` | Tensor parallelism degree | 1 |
+| `--pp` | Pipeline parallelism degree | 1 |
+| `--zero` | DeepSpeed ZeRO stage (0/1/2/3) | 0 |
+| `--flashattn` | Enable FlashAttention | false |
+| `--grad-checkpoint` | Enable gradient checkpointing | false |
+| `--lora` | Enable LoRA | false |
+| `--qlora` | Enable QLoRA (4-bit) | false |
+| `--lora-rank` | LoRA rank | 8 |
+| `--fused-loss` | Enable fused loss (Liger) | false |
+| `--probe` | Run empirical GPU probe | false |
+| `--use-vision` | Enable vision encoder | false |
+
+For complete parameter list: `python -m llm_memory_estimator --help`
+
+## How It Works
+
+The estimator calculates per-GPU memory as:
+
 ```
-=== Memory Estimate (per GPU) ===
-Total (peak)        :  14.32 GiB
-
---- Empirical Probe ---
-max_memory_allocated : 13.45 GiB
-max_memory_reserved  : 15.21 GiB
-Diff (estimate - reserved): -0.89 GiB
+Total = Weights + Gradients + Optimizer States + Activations + Logits + Overheads
 ```
 
----
+**Key components:**
+- **Weights:** Model parameters (sharded by TP/PP/ZeRO-3)
+- **Trainable State:** Gradients + optimizer states (sharded by ZeRO-1/2/3)
+- **Activations:** Attention + MLP intermediate tensors (reduced by gradient checkpointing & FlashAttention)
+- **Logits:** Output layer activations (reduced by fused loss)
+- **Overheads:** CUDA context, DeepSpeed, fragmentation
 
-## 🎓 How It Works
+## Requirements
 
-### Memory Model
+**Estimation** (no GPU needed):
+- Python 3.8+
+- transformers >= 4.36.0
+- accelerate >= 0.25.0
+- torch >= 2.1.0 (CPU version OK)
 
-The estimator breaks down per-GPU VRAM into:
+**Empirical Probe** (GPU required):
+- CUDA-enabled PyTorch
 
-```
-Total = Weights + Trainable_State + Activations + Logits + Overheads + Peak_Buffer
-```
-
-**Weights:**
-- Full precision: `params × bytes(dtype)`
-- QLoRA: `params × 0.56` (4-bit + scales/zeros)
-- Sharded by: TP, PP, ZeRO-3 (for trainable)
-
-**Trainable State:**
-- Gradients: `trainable_params × bytes(dtype)`
-- Optimizer (AdamW): `trainable_params × 8` (2 states in fp32)
-- Master weights: `trainable_params × 4` (optional fp32 copy)
-- For LoRA: Only adapter params are trainable
-- Sharded by: ZeRO stages, TP
-
-**Activations:**
-- Attention (non-FA): `B × heads × S² × layers` + linear term
-- Attention (FA): `B × S × layers × H × factor` (linear in S)
-- MLP: `B × S × layers × H × mlp_factor`
-- Gradient checkpointing: Multiply by reduction factor (0.2-0.5)
-- Sharded by: TP, PP
-
-**Logits:**
-- `B × S × vocab × logits_factor`
-- With fused loss: 5× reduction
-- Sharded by: TP (vocab-parallel)
-
-### Calibration
-
-For production accuracy, calibrate against empirical measurements:
-
-1. Run estimate
-2. Run `--probe true` on actual GPU
-3. Adjust tuning factors to match
-4. Use calibrated factors for future estimates
-
-See [Playbook](./docs/) for detailed calibration guide.
-
----
-
-## ⚙️ Configuration
-
-### Environment Variables
+## Installation
 
 ```bash
-# Force CPU-only (disable CUDA)
-export CUDA_VISIBLE_DEVICES=""
-
-# Use specific GPU for probe
-export CUDA_VISIBLE_DEVICES=0
-```
-
-### Config Files
-
-The package supports modular configuration through its component architecture:
-
-```
-estimate_memory_budget/
-├── components/      # Model components (attention, MLP, etc.)
-├── config/          # Configuration dataclasses
-├── core/            # Core estimation logic
-├── formulas/        # Memory calculation formulas
-├── optimizations/   # Optimization-specific adjustments
-├── parallelism/     # DP/TP/PP/ZeRO logic
-├── probe/           # Empirical measurement
-└── utils/           # Helper utilities
-```
-
----
-
-## 🤝 Contributing
-
-Contributions welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-### Development Setup
-
-```bash
-git clone https://github.com/YOUR_USERNAME/llm-memory-estimator.git
+git clone https://github.com/MiaoDX/llm-memory-estimator.git
 cd llm-memory-estimator
-pip install -e ".[dev]"
+pip install -e .
 
-# Run tests (if available)
-pytest
-
-# Format code
-black .
+# With Gradio UI
+pip install -e ".[gradio]"
 ```
 
----
+## License
 
-## 📝 Notes
+MIT License - see LICENSE file for details.
 
-### Accuracy
+## Contributing
 
-- Estimates are **approximate** (±10-15% after calibration)
-- Actual memory depends on kernels, framework versions, runtime optimizations
-- **Rule of thumb:** Keep peak ≤ 75-80% of physical HBM
-
-### Limitations
-
-- Vision encoders: Rough approximation (ViT-style assumed)
-- Custom architectures: May need manual tuning
-- Communication buffers: Included in overheads (not explicitly modeled)
-- Framework overhead: Varies by version
-
-### Requirements
-
-- **Estimation:** CPU-only, no GPU needed
-- **Probe:** Requires CUDA GPU
-- **Models:** HuggingFace-compatible configs
-
----
-
-## 📄 License
-
-MIT License - See [LICENSE](./LICENSE) for details
-
----
-
-## 🙏 Acknowledgments
-
-Built for the ML community. Based on memory modeling research from transformer training at scale.
-
-**Inspired by:**
-- DeepSpeed memory optimization techniques
-- HuggingFace Transformers architecture
-- Community feedback on GPU memory estimation
-
----
-
-## 🔗 Links
-
-- **Documentation:** [Full Playbook](./docs/)
-- **CLI Guide:** [CLI README](./CLI_README.md)
-- **Issues:** [GitHub Issues](https://github.com/YOUR_USERNAME/llm-memory-estimator/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/YOUR_USERNAME/llm-memory-estimator/discussions)
-
----
-
-**Made with ❤️ for efficient LLM training**
+Contributions welcome! This tool uses mathematical models calibrated against empirical measurements. Estimates typically accurate within ±10-15%.

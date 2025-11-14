@@ -5,7 +5,9 @@ Hugging Face Spaces deployment
 """
 import gradio as gr
 import pandas as pd
-from cli import MemoryEstimator, EstimatorInputs
+from .core.estimator import MemoryEstimator
+from .core.config import EstimatorConfig
+from .core.results import EstimationResult
 
 def estimate_memory(
     model_name, dtype, seq_len, batch_size, grad_accum,
@@ -17,43 +19,77 @@ def estimate_memory(
     fragmentation_gib, misc_overhead_gib
 ):
     """Run memory estimation with given parameters."""
+    # Parse LoRA target modules if provided
+    target_modules = None
+    if lora_targets and lora_targets.strip():
+        target_modules = [m.strip() for m in lora_targets.split(",") if m.strip()]
+
+    # Build optimizations dict
+    optimizations = {}
+    if flashattn:
+        optimizations["flashattention"] = {}
+    if grad_ckpt:
+        optimizations["gradient_checkpointing"] = {"reduction": grad_ckpt_reduction}
+    if fused_loss:
+        optimizations["fused_loss"] = {}
+
+    # Build LoRA config
+    lora = None
+    if use_lora or qlora:
+        lora = {
+            "rank": int(lora_rank),
+            "quantized": qlora,
+            "target_modules": target_modules,
+        }
+
+    # Calculate DeepSpeed overhead
+    deepspeed_overhead_gib = {0: 0.0, 1: 1.0, 2: 2.0, 3: 3.0}.get(int(zero_stage), 0.0)
+
+    # Create configuration
+    cfg = EstimatorConfig(
+        model=model_name,
+        dtype=dtype,
+        seq_len=int(seq_len),
+        per_device_batch=int(batch_size),
+        grad_accum=int(grad_accum),
+        dp=int(dp),
+        tp=int(tp),
+        pp=int(pp),
+        zero_stage=int(zero_stage),
+        optimizations=optimizations,
+        lora=lora,
+        use_kv_cache=use_kv_cache,
+        attn_act_factor_no_fa=attn_factor_no_fa,
+        attn_act_factor_fa=attn_factor_fa,
+        mlp_act_factor=mlp_factor,
+        fragmentation_gib=fragmentation_gib,
+        misc_overhead_gib=misc_overhead_gib,
+        deepspeed_overhead_gib=deepspeed_overhead_gib,
+    )
+
+    # Run estimation (only wrap this critical section)
     try:
-        # Parse LoRA target modules if provided
-        target_modules = None
-        if lora_targets and lora_targets.strip():
-            target_modules = [m.strip() for m in lora_targets.split(",") if m.strip()]
-
-        cfg = EstimatorInputs(
-            model=model_name,
-            dtype=dtype,
-            seq_len=int(seq_len),
-            per_device_batch=int(batch_size),
-            grad_accum=int(grad_accum),
-            dp=int(dp),
-            tp=int(tp),
-            pp=int(pp),
-            zero=int(zero_stage),
-            flashattn=flashattn,
-            grad_checkpoint=grad_ckpt,
-            fused_loss=fused_loss,
-            use_lora=use_lora,
-            qlora=qlora,
-            lora_rank=int(lora_rank),
-            lora_target_modules=target_modules,
-            use_kv_cache=use_kv_cache,
-            grad_ckpt_reduction=grad_ckpt_reduction,
-            attn_act_factor_no_fa=attn_factor_no_fa,
-            attn_act_factor_fa=attn_factor_fa,
-            mlp_act_factor=mlp_factor,
-            fragmentation_gib=fragmentation_gib,
-            misc_overhead_gib=misc_overhead_gib,
-        )
-
         estimator = MemoryEstimator(cfg)
         result = estimator.estimate()
+    except FileNotFoundError as e:
+        error_msg = f"## ❌ Model Not Found\n\n{str(e)}\n\nPlease check the model name and ensure it exists on HuggingFace or locally."
+        empty_df = pd.DataFrame({'Category': [], 'Memory (GiB)': []})
+        return error_msg, empty_df
+    except ValueError as e:
+        error_msg = f"## ❌ Invalid Configuration\n\n{str(e)}\n\nPlease check your parameter values."
+        empty_df = pd.DataFrame({'Category': [], 'Memory (GiB)': []})
+        return error_msg, empty_df
+    except Exception as e:
+        # Catch-all for unexpected errors - show full details
+        error_msg = f"## ❌ Estimation Error\n\n```\n{str(e)}\n```\n\nPlease report this if the error persists."
+        empty_df = pd.DataFrame({'Category': [], 'Memory (GiB)': []})
+        return error_msg, empty_df
 
-        # Create summary
-        summary = f"""
+    # Extract values from breakdown
+    breakdown_data = result.breakdown
+
+    # Create summary
+    summary = f"""
 ## 📊 Memory Estimate (per GPU)
 
 ### Key Metrics
@@ -69,79 +105,61 @@ def estimate_memory(
 - LoRA: {use_lora}, QLoRA: {qlora}
 """
 
-        # Create detailed breakdown table
-        breakdown = pd.DataFrame({
-            'Category': [
-                'Base Weights',
-                'Trainable State',
-                'Attention Activations',
-                'MLP Activations',
-                'Output Logits',
-                'KV Cache',
-                'Vision Activations',
-                'CUDA/cuBLAS',
-                'Misc Overhead',
-                'DeepSpeed Overhead',
-                'Fragmentation',
-            ],
-            'Memory (GiB)': [
-                f"{result.base_weights_gib:.2f}",
-                f"{result.trainable_state_gib:.2f}",
-                f"{result.attention_activ_gib:.2f}",
-                f"{result.mlp_activ_gib:.2f}",
-                f"{result.logits_gib:.2f}",
-                f"{result.kv_cache_gib:.2f}",
-                f"{result.vision_activ_gib:.2f}",
-                f"{result.cuda_libs_gib:.2f}",
-                f"{result.misc_overhead_gib:.2f}",
-                f"{result.deepspeed_overhead_gib:.2f}",
-                f"{result.fragmentation_gib:.2f}",
-            ]
-        })
+    # Create detailed breakdown table
+    breakdown = pd.DataFrame({
+        'Category': [
+            'Base Weights',
+            'Trainable State',
+            'Attention Activations',
+            'MLP Activations',
+            'Output Logits',
+            'KV Cache',
+            'Vision Activations',
+            'CUDA/cuBLAS',
+            'Misc Overhead',
+            'DeepSpeed Overhead',
+            'Fragmentation',
+        ],
+        'Memory (GiB)': [
+            f"{breakdown_data.get('weights', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('trainable_state', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('attention_activations', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('mlp_activations', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('logits', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('kv_cache', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('vision_activations', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('cuda_libs', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('misc_overhead', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('deepspeed_overhead', {}).get('gib', 0.0):.2f}",
+            f"{breakdown_data.get('fragmentation', {}).get('gib', 0.0):.2f}",
+        ]
+    })
 
-        # Hardware recommendation
-        gpu_options = []
-        peak_mem = result.peak_total_gib
+    # Hardware recommendation
+    gpu_options = []
+    peak_mem = result.peak_total_gib
 
-        if peak_mem <= 16:
-            gpu_options.append("✅ RTX 4090 (24GB), RTX 3090 (24GB), A10 (24GB)")
-        if peak_mem <= 24:
-            gpu_options.append("✅ RTX 4090 (24GB), A10 (24GB), L4 (24GB)")
-        if peak_mem <= 40:
-            gpu_options.append("✅ A100 40GB, A6000 (48GB)")
-        if peak_mem <= 48:
-            gpu_options.append("✅ A6000 (48GB), L40S (48GB)")
-        if peak_mem <= 80:
-            gpu_options.append("✅ A100 80GB, H100 80GB")
-        if peak_mem <= 141:
-            gpu_options.append("✅ H200 (141GB)")
+    if peak_mem <= 16:
+        gpu_options.append("✅ RTX 4090 (24GB), RTX 3090 (24GB), A10 (24GB)")
+    if peak_mem <= 24:
+        gpu_options.append("✅ RTX 4090 (24GB), A10 (24GB), L4 (24GB)")
+    if peak_mem <= 40:
+        gpu_options.append("✅ A100 40GB, A6000 (48GB)")
+    if peak_mem <= 48:
+        gpu_options.append("✅ A6000 (48GB), L40S (48GB)")
+    if peak_mem <= 80:
+        gpu_options.append("✅ A100 80GB, H100 80GB")
+    if peak_mem <= 141:
+        gpu_options.append("✅ H200 (141GB)")
 
-        if not gpu_options:
-            gpu_options.append("⚠️ Requires multiple GPUs or model parallelism")
+    if not gpu_options:
+        gpu_options.append("⚠️ Requires multiple GPUs or model parallelism")
 
-        hardware_rec = "### 🖥️ Recommended GPUs\n" + "\n".join(gpu_options)
+    hardware_rec = "### 🖥️ Recommended GPUs\n" + "\n".join(gpu_options)
 
-        full_summary = summary + "\n" + hardware_rec
+    full_summary = summary + "\n" + hardware_rec
 
-        return full_summary, breakdown
-
-    except Exception as e:
-        error_msg = f"""
-## ❌ Error
-
-An error occurred during estimation:
-
-```
-{str(e)}
-```
-
-Please check your parameters and try again. Common issues:
-- Invalid model name (must be a valid HuggingFace model ID or local path)
-- Sequence length too large
-- Invalid parallelism configuration
-"""
-        empty_df = pd.DataFrame({'Category': [], 'Memory (GiB)': []})
-        return error_msg, empty_df
+    return full_summary, breakdown
 
 
 # Create Gradio interface
@@ -168,10 +186,10 @@ with gr.Blocks(
             with gr.Row():
                 with gr.Column():
                     model_name = gr.Textbox(
-                        value="meta-llama/Llama-2-7b-hf",
+                        value="Qwen/Qwen2.5-7B-Instruct",
                         label="Model Name",
                         info="HuggingFace model ID or local path",
-                        placeholder="meta-llama/Llama-2-7b-hf"
+                        placeholder="Qwen/Qwen2.5-7B-Instruct"
                     )
                     dtype = gr.Dropdown(
                         choices=["bf16", "fp16", "fp32", "fp8", "int8", "int4", "nf4"],
@@ -381,23 +399,28 @@ with gr.Blocks(
         examples=[
             # [model, dtype, seq, batch, ga, dp, tp, pp, zero, fa, gc, fl, lora, qlora, rank, targets, kv, ckpt_red, attn_nofa, attn_fa, mlp, frag, misc]
             [
-                "meta-llama/Llama-2-7b-hf", "bf16", 4096, 2, 128, 8, 1, 1, 2,
+                "Qwen/Qwen2.5-7B-Instruct", "bf16", 4096, 2, 128, 8, 1, 1, 2,
                 True, True, True, False, False, 8, "", False,
                 0.35, 4.0, 0.8, 6.0, 5.0, 3.0
             ],
             [
-                "mistralai/Mistral-7B-v0.1", "bf16", 4096, 1, 64, 4, 2, 1, 3,
+                "Qwen/Qwen2.5-7B-Instruct", "bf16", 4096, 1, 64, 4, 2, 1, 3,
                 True, True, False, True, True, 8, "q_proj,k_proj,v_proj,o_proj", False,
                 0.35, 4.0, 0.8, 6.0, 5.0, 3.0
             ],
             [
-                "meta-llama/Llama-2-13b-hf", "bf16", 8192, 1, 256, 16, 1, 1, 3,
+                "Qwen/Qwen2.5-14B-Instruct", "bf16", 8192, 1, 256, 16, 1, 1, 3,
                 True, True, True, False, False, 8, "", False,
                 0.35, 4.0, 0.8, 6.0, 5.0, 3.0
             ],
             [
-                "meta-llama/Llama-2-70b-hf", "bf16", 4096, 1, 512, 32, 4, 1, 3,
+                "Qwen/Qwen2.5-72B-Instruct", "bf16", 4096, 1, 512, 32, 4, 1, 3,
                 True, True, True, True, False, 64, "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj", False,
+                0.35, 4.0, 0.8, 6.0, 5.0, 3.0
+            ],
+            [
+                "Qwen/Qwen2.5-VL-7B-Instruct", "bf16", 4096, 1, 64, 4, 1, 1, 2,
+                True, True, False, False, False, 8, "", False,
                 0.35, 4.0, 0.8, 6.0, 5.0, 3.0
             ],
         ],
@@ -438,6 +461,19 @@ with gr.Blocks(
         outputs=[summary_output, breakdown_output]
     )
 
+def launch_app(**kwargs):
+    """Launch the Gradio app.
+
+    Args:
+        **kwargs: Additional arguments to pass to demo.launch()
+    """
+    return demo.launch(**kwargs)
+
 # Launch the app
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(
+        share=False,
+        server_name="127.0.0.1",
+        server_port=7860,
+        show_error=True
+    )

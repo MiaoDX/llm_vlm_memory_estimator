@@ -22,7 +22,7 @@ class EstimatorConfigBuilder:
 
     Example:
         config = (EstimatorConfigBuilder()
-            .for_model("meta-llama/Llama-2-7b-hf")
+            .for_model("Qwen/Qwen2.5-7B-Instruct")
             .with_training(seq_len=4096, batch=2, grad_accum=64)
             .with_dtype("bf16")
             .with_parallelism(dp=8, tp=1, pp=1)
