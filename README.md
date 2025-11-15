@@ -1,3 +1,15 @@
+---
+title: LLM/VLM Memory Estimator
+emoji: 🧮
+colorFrom: blue
+colorTo: green
+sdk: gradio
+sdk_version: 5.49.1
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # LLM/VLM Memory Estimator
 
 Estimate GPU memory requirements for fine-tuning Large Language Models and Vision-Language Models.

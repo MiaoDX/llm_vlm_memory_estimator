@@ -37,13 +37,15 @@ dev = [
     "pytest>=7.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
+    "mktestdocs>=0.2.0",
 ]
 cuda-full = [
     "peft>=0.8.0",
     "bitsandbytes>=0.43.0",
-    "flash-attn>=2.5.0",
-    "deepspeed>=0.14.0",
-    "liger-kernel>=0.1.0",
+    # Note: flash-attn, deepspeed, and liger-kernel require CUDA and must be
+    # installed manually on CUDA systems:
+    #   pip install flash-attn>=2.5.0 deepspeed>=0.14.0 liger-kernel>=0.1.0
+    # These are excluded from uv dependencies to allow CPU-only development
 ]
 
 [project.scripts]
@@ -66,6 +68,16 @@ explicit = true
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu" }
+]
+
+# Mark dev and cuda-full as mutually exclusive
+# This prevents CUDA packages from being installed together with dev tools
+[tool.uv]
+conflicts = [
+    [
+        { extra = "dev" },
+        { extra = "cuda-full" },
+    ],
 ]
 
 [tool.hatchling.build.targets.wheel]
