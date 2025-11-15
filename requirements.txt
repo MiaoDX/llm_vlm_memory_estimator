@@ -1,0 +1,7 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+transformers>=4.36.0
+accelerate>=0.25.0
+torch>=2.1.0
+pandas>=2.0.0
+gradio>=4.40.0
