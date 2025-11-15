@@ -41,7 +41,7 @@ pip install -e .
 uv run llm-memory-estimator \
   --model Qwen/Qwen2.5-7B-Instruct \
   --dtype bf16 \
-  --seq-len 4096 \
+  --seq-len 2048 \
   --per-device-batch 2 \
   --grad-accum 128 \
   --zero 2 \
@@ -50,56 +50,36 @@ uv run llm-memory-estimator \
   --grad-checkpoint true
 ```
 
-### Python API
-
-```python
-from llm_memory_estimator.cli import MemoryEstimator, EstimatorInputs
-
-cfg = EstimatorInputs(
-    model="Qwen/Qwen2.5-7B-Instruct",
-    dtype="bf16",
-    seq_len=4096,
-    per_device_batch=2,
-    grad_accum=128,
-    dp=8,
-    zero=2,
-    flashattn=True,
-    grad_checkpoint=True
-)
-
-estimator = MemoryEstimator(cfg)
-result = estimator.estimate()
-print(f"Peak memory: {result.peak_total_gib:.2f} GiB per GPU")
-```
-
 ## Examples
 
 ### Full Fine-Tuning (7B Model)
 
 ```bash
-python -m llm_memory_estimator \
+uv run llm-memory-estimator \
   --model Qwen/Qwen2.5-7B-Instruct \
   --dtype bf16 \
-  --seq-len 4096 \
+  --seq-len 2048 \
   --per-device-batch 2 \
+  --grad-accum 128 \
   --zero 2 \
   --dp 8 \
   --flashattn true \
   --grad-checkpoint true
 ```
 
-**Result:** ~14 GiB/GPU (fits on A100 40GB)
+**Result:** ~14 GiB/GPU (estimated, may vary based on actual runtime behavior)
 
 ### QLoRA (7B Model)
 
 ```bash
-python -m llm_memory_estimator \
+uv run llm-memory-estimator \
   --model Qwen/Qwen2.5-7B-Instruct \
   --dtype bf16 \
   --qlora true \
   --lora-rank 8 \
-  --seq-len 4096 \
+  --seq-len 2048 \
   --per-device-batch 1 \
+  --grad-accum 64 \
   --zero 3 \
   --dp 4 \
   --tp 2 \
@@ -107,17 +87,19 @@ python -m llm_memory_estimator \
   --grad-checkpoint true
 ```
 
-**Result:** ~8 GiB/GPU (fits on RTX 4090)
+**Result:** ~8 GiB/GPU (estimated, may vary based on actual runtime behavior)
 
 ### LoRA (72B Model)
 
 ```bash
-python -m llm_memory_estimator \
+uv run llm-memory-estimator \
   --model Qwen/Qwen2.5-72B-Instruct \
   --dtype bf16 \
   --lora true \
   --lora-rank 64 \
-  --seq-len 4096 \
+  --seq-len 2048 \
+  --per-device-batch 1 \
+  --grad-accum 512 \
   --zero 3 \
   --dp 32 \
   --tp 4 \
@@ -125,16 +107,17 @@ python -m llm_memory_estimator \
   --grad-checkpoint true
 ```
 
-**Result:** ~18 GiB/GPU (fits on A100 40GB)
+**Result:** ~18 GiB/GPU (estimated, may vary based on actual runtime behavior)
 
 ### Vision-Language Model
 
 ```bash
-python -m llm_memory_estimator \
+uv run llm-memory-estimator \
   --model Qwen/Qwen2.5-VL-7B-Instruct \
   --dtype bf16 \
-  --seq-len 4096 \
+  --seq-len 2048 \
   --per-device-batch 1 \
+  --grad-accum 64 \
   --zero 2 \
   --dp 4 \
   --flashattn true \
@@ -149,10 +132,10 @@ python -m llm_memory_estimator \
 ### Empirical Probe (GPU Required)
 
 ```bash
-python -m llm_memory_estimator \
+uv run llm-memory-estimator \
   --model Qwen/Qwen2.5-7B-Instruct \
   --dtype bf16 \
-  --seq-len 4096 \
+  --seq-len 2048 \
   --flashattn true \
   --grad-checkpoint true \
   --probe true \
@@ -168,7 +151,7 @@ Compares estimated vs actual GPU memory usage.
 |-----------|-------------|---------|
 | `--model` | HuggingFace model ID | Required |
 | `--dtype` | Precision (bf16/fp16/fp32/int8/nf4) | bf16 |
-| `--seq-len` | Sequence length | 4096 |
+| `--seq-len` | Sequence length | 2048 |
 | `--per-device-batch` | Batch size per GPU | 1 |
 | `--grad-accum` | Gradient accumulation steps | 1 |
 | `--dp` | Data parallelism degree | 1 |
@@ -184,7 +167,7 @@ Compares estimated vs actual GPU memory usage.
 | `--probe` | Run empirical GPU probe | false |
 | `--use-vision` | Enable vision encoder | false |
 
-For complete parameter list: `python -m llm_memory_estimator --help`
+For complete parameter list: `uv run llm-memory-estimator --help`
 
 ## How It Works
 

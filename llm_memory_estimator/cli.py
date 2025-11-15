@@ -196,7 +196,7 @@ def main():
         if args.zero == 0:
             deepspeed_overhead_gib = 0.0
         elif args.zero == 1:
-            deepspeed_overhead_gib = 1.0
+            deepspeed_overhead_gib = 1.5
         elif args.zero == 2:
             deepspeed_overhead_gib = 2.0
         else:  # ZeRO-3

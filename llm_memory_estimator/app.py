@@ -43,7 +43,7 @@ def estimate_memory(
         }
 
     # Calculate DeepSpeed overhead
-    deepspeed_overhead_gib = {0: 0.0, 1: 1.0, 2: 2.0, 3: 3.0}.get(int(zero_stage), 0.0)
+    deepspeed_overhead_gib = {0: 0.0, 1: 1.5, 2: 2.0, 3: 3.0}.get(int(zero_stage), 0.0)
 
     # Create configuration
     cfg = EstimatorConfig(
@@ -177,7 +177,7 @@ with gr.Blocks(
     Estimate per-GPU VRAM requirements for LLM/VLM fine-tuning.
     Supports **LoRA**, **QLoRA**, **FlashAttention**, **DeepSpeed ZeRO**, and **multi-GPU setups**.
 
-    📖 [Documentation](https://github.com/YOUR_REPO) | 🐛 [Report Issues](https://github.com/YOUR_REPO/issues)
+    📖 [Documentation](https://github.com/MiaoDX/llm_vlm_memory_estimator) | 🐛 [Report Issues](https://github.com/MiaoDX/llm_vlm_memory_estimator/issues)
     """)
 
     with gr.Tabs():
@@ -202,7 +202,7 @@ with gr.Blocks(
                     seq_len = gr.Slider(
                         minimum=128,
                         maximum=32768,
-                        value=4096,
+                        value=2048,
                         step=128,
                         label="Sequence Length",
                         info="Max sequence length for training"
@@ -399,12 +399,12 @@ with gr.Blocks(
         examples=[
             # [model, dtype, seq, batch, ga, dp, tp, pp, zero, fa, gc, fl, lora, qlora, rank, targets, kv, ckpt_red, attn_nofa, attn_fa, mlp, frag, misc]
             [
-                "Qwen/Qwen2.5-7B-Instruct", "bf16", 4096, 2, 128, 8, 1, 1, 2,
+                "Qwen/Qwen2.5-7B-Instruct", "bf16", 2048, 2, 128, 8, 1, 1, 2,
                 True, True, True, False, False, 8, "", False,
                 0.35, 4.0, 0.8, 6.0, 5.0, 3.0
             ],
             [
-                "Qwen/Qwen2.5-7B-Instruct", "bf16", 4096, 1, 64, 4, 2, 1, 3,
+                "Qwen/Qwen2.5-7B-Instruct", "bf16", 2048, 1, 64, 4, 2, 1, 3,
                 True, True, False, True, True, 8, "q_proj,k_proj,v_proj,o_proj", False,
                 0.35, 4.0, 0.8, 6.0, 5.0, 3.0
             ],
@@ -414,13 +414,8 @@ with gr.Blocks(
                 0.35, 4.0, 0.8, 6.0, 5.0, 3.0
             ],
             [
-                "Qwen/Qwen2.5-72B-Instruct", "bf16", 4096, 1, 512, 32, 4, 1, 3,
-                True, True, True, True, False, 64, "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj", False,
-                0.35, 4.0, 0.8, 6.0, 5.0, 3.0
-            ],
-            [
-                "Qwen/Qwen2.5-VL-7B-Instruct", "bf16", 4096, 1, 64, 4, 1, 1, 2,
-                True, True, False, False, False, 8, "", False,
+                "Qwen/Qwen2.5-72B-Instruct", "bf16", 2048, 1, 512, 32, 4, 1, 3,
+                True, True, True, False, True, 64, "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj", False,
                 0.35, 4.0, 0.8, 6.0, 5.0, 3.0
             ],
         ],
@@ -440,7 +435,7 @@ with gr.Blocks(
     ---
     ### 📝 Notes
     - **Estimates are approximate.** Real memory usage depends on kernels, framework versions, and runtime behavior.
-    - Use empirical probe (see [estimator script](https://github.com/YOUR_REPO/scripts/estimate_memory_budget.py)) to calibrate factors.
+    - Run `llm-memory-estimator --model MODEL_NAME --probe true` to measure actual memory usage and calibrate factors.
     - Keep peak ≤ 75-80% of physical HBM for safety margin.
     - For QLoRA: base weights use ~0.56 bytes/param (4-bit + scales/zeros overhead).
 

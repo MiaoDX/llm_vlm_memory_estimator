@@ -50,8 +50,8 @@ cuda-full = [
 llm-memory-estimator = "llm_memory_estimator.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/llm-memory-estimator/llm_memory_estimator"
-Repository = "https://github.com/llm-memory-estimator/llm_memory_estimator"
+Homepage = "https://github.com/MiaoDX/llm_vlm_memory_estimator"
+Repository = "https://github.com/MiaoDX/llm_vlm_memory_estimator"
 
 # uv configuration: CPU-only PyTorch by default (saves ~1GB vs CUDA version)
 # For CUDA support with probe:
