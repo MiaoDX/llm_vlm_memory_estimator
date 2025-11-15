@@ -117,6 +117,8 @@ class EstimatorConfig:
     probe_enabled: bool = False
     probe_steps: int = 6
     probe_warmup: int = 3
+    probe_device: str = "cuda"
+    probe_device_id: int = 0
 
     # Vision (VLM) configuration
     # Example: {"enabled": True, "image_size": 448, "patch_size": 14, "layers": 24, "hidden": 1024}
@@ -158,6 +160,16 @@ class EstimatorConfig:
         return self.lora is not None and self.lora.get("rank", 0) > 0
 
     @property
+    def qlora_enabled(self) -> bool:
+        """Check if QLoRA (quantized LoRA) is enabled"""
+        return self.has_lora and self.lora.get("quantized", False)
+
+    @property
+    def lora_enabled(self) -> bool:
+        """Check if standard LoRA (non-quantized) is enabled"""
+        return self.has_lora and not self.lora.get("quantized", False)
+
+    @property
     def has_vision(self) -> bool:
         """Check if vision (VLM) is enabled"""
         return self.vision is not None and self.vision.get("enabled", False)
@@ -182,3 +194,29 @@ class EstimatorConfig:
     def is_optimization_enabled(self, opt_name: str) -> bool:
         """Check if an optimization is enabled"""
         return opt_name in self.optimizations
+
+    def validate_config(self) -> None:
+        """
+        Validate configuration for mutual exclusions and conflicts.
+        Raises ValueError if configuration is invalid.
+        """
+        # QLoRA dtype constraints
+        if self.qlora_enabled:
+            if self.dtype not in ["bf16", "fp16"]:
+                raise ValueError(
+                    f"QLoRA requires bf16 or fp16 dtype, got: {self.dtype}"
+                )
+
+        # ZeRO stage constraints for probe
+        if self.probe_enabled and self.zero_stage > 0:
+            raise ValueError(
+                f"Probe with DeepSpeed ZeRO Stage {self.zero_stage} is not yet supported. "
+                "Use --zero 0 for single-GPU probe."
+            )
+
+        # Multi-GPU probe not yet supported
+        if self.probe_enabled and (self.dp > 1 or self.tp > 1 or self.pp > 1):
+            raise ValueError(
+                "Probe with multi-GPU parallelism (DP/TP/PP) is not yet supported. "
+                "Use single-GPU configuration for probe."
+            )

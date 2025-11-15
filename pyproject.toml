@@ -38,6 +38,13 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
+cuda-full = [
+    "peft>=0.8.0",
+    "bitsandbytes>=0.43.0",
+    "flash-attn>=2.5.0",
+    "deepspeed>=0.14.0",
+    "liger-kernel>=0.1.0",
+]
 
 [project.scripts]
 llm-memory-estimator = "llm_memory_estimator.cli:main"
@@ -47,6 +54,10 @@ Homepage = "https://github.com/llm-memory-estimator/llm_memory_estimator"
 Repository = "https://github.com/llm-memory-estimator/llm_memory_estimator"
 
 # uv configuration: CPU-only PyTorch by default (saves ~1GB vs CUDA version)
+# For CUDA support with probe:
+#   1. Remove torch from dependencies or install cuda-full extras
+#   2. Install CUDA torch manually: pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   3. Then: uv sync --extra cuda-full
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"

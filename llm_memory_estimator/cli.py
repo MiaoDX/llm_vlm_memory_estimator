@@ -148,8 +148,10 @@ def main():
 
     # Empirical probe
     p.add_argument("--probe", type=parse_bool, default=False, help="Run empirical probe on GPU")
-    p.add_argument("--probe-steps", type=int, default=5, help="Training steps for probe")
-    p.add_argument("--warmup-steps", type=int, default=2, help="Warmup steps before measurement")
+    p.add_argument("--probe-steps", type=int, default=6, help="Training steps for probe")
+    p.add_argument("--probe-warmup", type=int, default=3, help="Warmup steps before measurement")
+    p.add_argument("--probe-device", type=str, default="cuda", help="Device for probe (cuda, cuda:0, etc)")
+    p.add_argument("--probe-device-id", type=int, default=0, help="GPU device ID for probe")
     p.add_argument("--estimate-only", type=parse_bool, default=False, help="Skip probe even if --probe is set")
 
     args = p.parse_args()
@@ -241,20 +243,62 @@ def main():
         attn_act_factor_fa=args.attn_act_factor_fa,
         mlp_act_factor=args.mlp_act_factor,
         logits_factor=args.logits_factor,
+
+        # Probe settings
+        probe_enabled=args.probe,
+        probe_steps=args.probe_steps,
+        probe_warmup=args.probe_warmup,
+        probe_device=args.probe_device,
+        probe_device_id=args.probe_device_id,
     )
 
     # Create estimator and run estimation
     estimator = MemoryEstimator(config)
     result = estimator.estimate()
 
+    # Print estimation results
+    pretty_print(config, result)
+
     # Run empirical probe if requested
     if args.probe and not args.estimate_only:
-        print("\n[WARNING] Empirical probe is not yet implemented in the modular architecture.")
-        print("[WARNING] Probe functionality will be added in a future update.")
-        print("[WARNING] For now, only estimation results are shown.\n")
+        try:
+            from .probe import ProbeRunner
 
-    # Print results
-    pretty_print(config, result)
+            print("\n" + "=" * 70)
+            print("Running empirical GPU probe...")
+            print("=" * 70)
+
+            # Get model info from estimator
+            model_info = estimator.model_info
+
+            # Create and run probe
+            runner = ProbeRunner(config, model_info)
+            probe_result = runner.run()
+
+            # Print probe summary
+            probe_result.print_summary()
+
+            # Compare with estimation
+            comparison = probe_result.compare_with_estimate(result.peak_total_gib)
+            comparison.print_comparison()
+
+        except ImportError as e:
+            print(f"\n[ERROR] Failed to import probe modules: {e}")
+            print("[INFO] Install GPU probe dependencies with:")
+            print("       uv sync --extra cuda-full")
+            print("       OR: pip install peft bitsandbytes flash-attn deepspeed liger-kernel")
+            sys.exit(1)
+        except ValueError as e:
+            print(f"\n[ERROR] Configuration error: {e}")
+            sys.exit(1)
+        except RuntimeError as e:
+            print(f"\n[ERROR] Runtime error during probe: {e}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"\n[ERROR] Unexpected error during probe: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
 
 
 if __name__ == "__main__":
