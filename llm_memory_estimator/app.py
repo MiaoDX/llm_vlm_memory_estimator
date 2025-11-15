@@ -471,9 +471,15 @@ def launch_app(**kwargs):
 
 # Launch the app
 if __name__ == "__main__":
+    import sys
+    # Force unbuffered output
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
+    print("Starting Gradio server...")
     demo.launch(
-        share=False,
-        server_name="127.0.0.1",
+        server_name="0.0.0.0",
         server_port=7860,
-        show_error=True
+        show_error=True,
+        quiet=False
     )

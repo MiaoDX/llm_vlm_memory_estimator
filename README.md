@@ -16,18 +16,29 @@ Estimate GPU memory requirements for fine-tuning Large Language Models and Visio
 ### Web UI
 
 ```bash
-pip install -e ".[gradio]"
-python app.py
+# Using uv (recommended)
+uv sync
+uv run python -m llm_memory_estimator.app
+# Or: uv run python llm_memory_estimator/app.py
 # Visit http://localhost:7860
+
+# Using pip
+pip install -e .
+python -m llm_memory_estimator.app
 ```
 
 ### Command Line
 
 ```bash
+# Using uv (recommended)
+uv sync
+uv run llm-memory-estimator --help
+
+# Using pip
 pip install -e .
 
-# Basic estimation
-python -m llm_memory_estimator \
+# Basic estimation (with uv)
+uv run llm-memory-estimator \
   --model Qwen/Qwen2.5-7B-Instruct \
   --dtype bf16 \
   --seq-len 4096 \
@@ -203,13 +214,34 @@ Total = Weights + Gradients + Optimizer States + Activations + Logits + Overhead
 
 ## Installation
 
+### Using uv (recommended)
+
+[uv](https://github.com/astral-sh/uv) is a fast Python package installer and resolver.
+
+**Note:** This project uses **CPU-only PyTorch** by default (~650 MB vs 1.7 GB CUDA version, 1.xGB vs 7.x GB for full virtual env), which is sufficient for memory estimation. The empirical probe feature (GPU required) is not yet implemented.
+
+```bash
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone and setup
+git clone https://github.com/MiaoDX/llm-memory-estimator.git
+cd llm-memory-estimator
+uv sync
+
+# Run the CLI
+uv run llm-memory-estimator --help
+
+# Run the web UI
+uv run python -m llm_memory_estimator.app
+```
+
+### Using pip
+
 ```bash
 git clone https://github.com/MiaoDX/llm-memory-estimator.git
 cd llm-memory-estimator
 pip install -e .
-
-# With Gradio UI
-pip install -e ".[gradio]"
 ```
 
 ## License
